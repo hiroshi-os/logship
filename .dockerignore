@@ -1,0 +1,6 @@
+.git
+bin
+tmp-cluster
+data
+benches/out
+**/*.test

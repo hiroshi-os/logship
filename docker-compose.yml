@@ -1,0 +1,62 @@
+services:
+  broker-1:
+    build: .
+    hostname: broker-1
+    command:
+      - --id=1
+      - --bind=0.0.0.0:9092
+      - --advertise=broker-1:9092
+      - --data=/data
+      - --peers=1=broker-1:9092,2=broker-2:9092,3=broker-3:9092
+    ports:
+      - "9092:9092"
+    volumes:
+      - b1:/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9092/health"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+
+  broker-2:
+    build: .
+    hostname: broker-2
+    command:
+      - --id=2
+      - --bind=0.0.0.0:9092
+      - --advertise=broker-2:9092
+      - --data=/data
+      - --peers=1=broker-1:9092,2=broker-2:9092,3=broker-3:9092
+    ports:
+      - "9093:9092"
+    volumes:
+      - b2:/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9092/health"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+
+  broker-3:
+    build: .
+    hostname: broker-3
+    command:
+      - --id=3
+      - --bind=0.0.0.0:9092
+      - --advertise=broker-3:9092
+      - --data=/data
+      - --peers=1=broker-1:9092,2=broker-2:9092,3=broker-3:9092
+    ports:
+      - "9094:9092"
+    volumes:
+      - b3:/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9092/health"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+
+volumes:
+  b1:
+  b2:
+  b3:

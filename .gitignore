@@ -1,0 +1,8 @@
+/bin/
+/data/
+/tmp-cluster/
+*.log
+*.test
+.DS_Store
+/benches/out/
+/benches/*.json
