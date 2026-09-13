@@ -2,6 +2,7 @@ package log
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -180,6 +181,38 @@ func TestWaitHighWatermark(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("wait did not unblock")
+	}
+}
+
+func TestConcurrentRead(t *testing.T) {
+	l := tempLog(t, 1<<20, 64)
+	for i := 0; i < 200; i++ {
+		if _, err := l.Append([]byte("k"), []byte("vvvvvvvv")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	l.SetHighWatermark(l.LEO())
+	errc := make(chan error, 8)
+	for g := 0; g < 8; g++ {
+		go func() {
+			for i := 0; i < 20; i++ {
+				recs, err := l.Read(int64(i*5), 4096, l.LEO())
+				if err != nil {
+					errc <- err
+					return
+				}
+				if len(recs) == 0 || recs[0].Offset != int64(i*5) {
+					errc <- fmt.Errorf("want offset %d got %v", i*5, recs)
+					return
+				}
+			}
+			errc <- nil
+		}()
+	}
+	for g := 0; g < 8; g++ {
+		if err := <-errc; err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

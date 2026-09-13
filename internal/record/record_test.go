@@ -76,6 +76,21 @@ func TestEncodedSizeMatchesBytes(t *testing.T) {
 	}
 }
 
+func TestDecodeAtMatchesDecode(t *testing.T) {
+	in := Record{Offset: 5, Timestamp: 6, Key: []byte("k"), Value: []byte("v")}
+	enc := Encode(in)
+	out, n, err := DecodeAt(bytes.NewReader(enc), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != len(enc) {
+		t.Fatalf("n=%d want %d", n, len(enc))
+	}
+	if out.Offset != in.Offset || string(out.Value) != "v" {
+		t.Fatalf("%+v", out)
+	}
+}
+
 func TestDecodeEOF(t *testing.T) {
 	_, err := Decode(bytes.NewReader(nil))
 	if !errors.Is(err, io.EOF) {

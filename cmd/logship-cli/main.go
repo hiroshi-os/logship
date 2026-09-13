@@ -70,14 +70,18 @@ func produceCmd(brokers string, args []string) {
 	key := fs.String("key", "", "record key (empty = round-robin)")
 	value := fs.String("value", "", "record value")
 	acks := fs.String("acks", "1", "1 or all")
+	topic, args := shiftTopic(args)
 	_ = fs.Parse(args)
-	if fs.NArg() < 1 || *value == "" {
+	if topic == "" {
+		topic = fs.Arg(0)
+	}
+	if topic == "" || *value == "" {
 		usage()
 		os.Exit(2)
 	}
 	cli := client.New(split(brokers))
 	resp, err := cli.Produce("", protocol.ProduceRequest{
-		Topic: fs.Arg(0), Key: *key, Value: *value, Acks: *acks,
+		Topic: topic, Key: *key, Value: *value, Acks: *acks,
 	})
 	must(err)
 	b, _ := json.MarshalIndent(resp, "", "  ")
@@ -88,12 +92,16 @@ func fetchCmd(brokers string, args []string) {
 	fs := flag.NewFlagSet("fetch", flag.ExitOnError)
 	part := fs.Int("partition", 0, "partition")
 	off := fs.Int64("offset", 0, "start offset")
+	topic, args := shiftTopic(args)
 	_ = fs.Parse(args)
-	if fs.NArg() < 1 {
+	if topic == "" {
+		topic = fs.Arg(0)
+	}
+	if topic == "" {
 		usage()
 		os.Exit(2)
 	}
-	fr, err := client.New(split(brokers)).Fetch("", fs.Arg(0), *part, *off, 1<<20, false)
+	fr, err := client.New(split(brokers)).Fetch("", topic, *part, *off, 1<<20, false)
 	must(err)
 	b, _ := json.MarshalIndent(fr, "", "  ")
 	fmt.Println(string(b))
@@ -104,12 +112,15 @@ func consumeCmd(brokers string, args []string) {
 	groupID := fs.String("group", "", "consumer group")
 	fromBeg := fs.Bool("from-beginning", false, "start at 0 if no committed offset")
 	max := fs.Int("max", 0, "exit after N records (0=run forever)")
+	topic, args := shiftTopic(args)
 	_ = fs.Parse(args)
-	if fs.NArg() < 1 || *groupID == "" {
+	if topic == "" {
+		topic = fs.Arg(0)
+	}
+	if topic == "" || *groupID == "" {
 		usage()
 		os.Exit(2)
 	}
-	topic := fs.Arg(0)
 	cli := client.New(split(brokers))
 	var member string
 	var gen int
@@ -194,6 +205,13 @@ func consumeCmd(brokers string, args []string) {
 			}
 		}
 	}
+}
+
+func shiftTopic(args []string) (string, []string) {
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		return args[0], args[1:]
+	}
+	return "", args
 }
 
 func split(s string) []string {

@@ -66,31 +66,50 @@ func Encode(r Record) []byte {
 
 // Decode consumes one record from r.
 func Decode(r io.Reader) (Record, error) {
+	rec, _, err := decode(func(p []byte) (int, error) {
+		return io.ReadFull(r, p)
+	})
+	return rec, err
+}
+
+// DecodeAt reads one record at off without mutating a shared file offset.
+func DecodeAt(r io.ReaderAt, off int64) (Record, int, error) {
+	return decode(func(p []byte) (int, error) {
+		n, err := r.ReadAt(p, off)
+		off += int64(n)
+		if err == io.EOF && n == len(p) {
+			return n, nil
+		}
+		return n, err
+	})
+}
+
+func decode(read func([]byte) (int, error)) (Record, int, error) {
 	var hdr [8]byte
-	if _, err := io.ReadFull(r, hdr[:]); err != nil {
-		return Record{}, err
+	if _, err := readFull(read, hdr[:]); err != nil {
+		return Record{}, 0, err
 	}
 	wantCRC := binary.BigEndian.Uint32(hdr[0:4])
 	size := binary.BigEndian.Uint32(hdr[4:8])
 	if size < 1+8+8+4+4 || size > 64<<20 {
-		return Record{}, fmt.Errorf("%w: implausible size %d", ErrCorrupt, size)
+		return Record{}, 0, fmt.Errorf("%w: implausible size %d", ErrCorrupt, size)
 	}
 	payload := make([]byte, size)
-	if _, err := io.ReadFull(r, payload); err != nil {
+	if _, err := readFull(read, payload); err != nil {
 		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-			return Record{}, ErrCorrupt
+			return Record{}, 0, ErrCorrupt
 		}
-		return Record{}, err
+		return Record{}, 0, err
 	}
 	crcInput := make([]byte, 4+len(payload))
 	copy(crcInput[:4], hdr[4:8])
 	copy(crcInput[4:], payload)
 	got := crc32.Checksum(crcInput, crcTable)
 	if got != wantCRC {
-		return Record{}, fmt.Errorf("%w: crc", ErrCorrupt)
+		return Record{}, 0, fmt.Errorf("%w: crc", ErrCorrupt)
 	}
 	if payload[0] != Magic {
-		return Record{}, ErrBadMagic
+		return Record{}, 0, ErrBadMagic
 	}
 	rec := Record{
 		Offset:    int64(binary.BigEndian.Uint64(payload[1:9])),
@@ -98,16 +117,31 @@ func Decode(r io.Reader) (Record, error) {
 	}
 	keyLen := binary.BigEndian.Uint32(payload[17:21])
 	if int(21+keyLen+4) > len(payload) {
-		return Record{}, ErrCorrupt
+		return Record{}, 0, ErrCorrupt
 	}
 	rec.Key = append([]byte(nil), payload[21:21+keyLen]...)
 	valOff := 21 + int(keyLen)
 	valLen := binary.BigEndian.Uint32(payload[valOff : valOff+4])
 	if valOff+4+int(valLen) != len(payload) {
-		return Record{}, ErrCorrupt
+		return Record{}, 0, ErrCorrupt
 	}
 	rec.Value = append([]byte(nil), payload[valOff+4:valOff+4+int(valLen)]...)
-	return rec, nil
+	return rec, 8 + int(size), nil
+}
+
+func readFull(read func([]byte) (int, error), p []byte) (int, error) {
+	n := 0
+	for n < len(p) {
+		c, err := read(p[n:])
+		n += c
+		if err != nil {
+			if n > 0 && errors.Is(err, io.EOF) {
+				return n, io.ErrUnexpectedEOF
+			}
+			return n, err
+		}
+	}
+	return n, nil
 }
 
 // EncodedSize returns the on-disk size of rec.

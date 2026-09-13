@@ -181,6 +181,10 @@ func (b *Broker) followLoop(ctx context.Context, topic string, partition, leader
 			if rec.Offset < lg.LEO() {
 				continue
 			}
+			if rec.Offset > lg.LEO() {
+				// Gap (should be rare after ReadAt); refetch from our LEO.
+				break
+			}
 			if _, err := lg.AppendAt(rec); err != nil {
 				log.Printf("logship: follower append %s/%d: %v", topic, partition, err)
 				break

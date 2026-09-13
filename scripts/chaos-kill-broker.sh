@@ -38,7 +38,7 @@ else
   kill -9 "$pid" || true
 fi
 
-sleep 3
+sleep 4
 echo "==> metadata after kill (controller / ISR should have moved)"
 curl -sS "http://${BROKER}/metadata" | python3 -m json.tool | head -n 60
 

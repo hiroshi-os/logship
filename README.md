@@ -101,8 +101,15 @@ starts the dead node again. Watch `/metadata` for ISR shrink and a new leader.
 go run ./cmd/bench --brokers 127.0.0.1:9092 --n 20000 --value-bytes 200 --acks 1
 ```
 
-Results we actually measured are in [`benches/results.md`](benches/results.md).
-No invented numbers.
+Results we actually measured (3 local brokers, 4× Xeon, HTTP per record):
+
+| acks | Routing | Produce ops/s | Consume ops/s |
+| --- | --- | --- | --- |
+| 1 | keyed | 19 286 | 169 956 |
+| 1 | keyless | 11 270 | 200 581 |
+| all | keyed | 43 | 170 816 |
+
+Full command lines and notes: [`benches/results.md`](benches/results.md). No invented numbers.
 
 ## Tests
 

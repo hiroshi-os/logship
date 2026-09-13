@@ -86,19 +86,25 @@ func main() {
 	}
 	start = time.Now()
 	var consumed int64
-	for _, p := range parts {
-		off := int64(0)
-		for consumed < prodN {
-			fr, err := cli.Fetch("", *topic, p, off, 1<<20, false)
+	offs := make(map[int]int64, len(parts))
+	deadline := time.Now().Add(15 * time.Second)
+	for consumed < prodN && time.Now().Before(deadline) {
+		progress := false
+		for _, p := range parts {
+			fr, err := cli.Fetch("", *topic, p, offs[p], 1<<20, false)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "fetch p=%d: %v\n", p, err)
-				break
+				continue
 			}
 			if len(fr.Records) == 0 {
-				break
+				continue
 			}
 			consumed += int64(len(fr.Records))
-			off = fr.Records[len(fr.Records)-1].Offset + 1
+			offs[p] = fr.Records[len(fr.Records)-1].Offset + 1
+			progress = true
+		}
+		if !progress {
+			time.Sleep(40 * time.Millisecond)
 		}
 	}
 	consDur := time.Since(start)

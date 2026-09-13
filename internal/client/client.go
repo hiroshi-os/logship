@@ -108,17 +108,32 @@ func (c *Client) Produce(addr string, req protocol.ProduceRequest) (protocol.Pro
 		addr = c.pick()
 	}
 	var out protocol.ProduceResponse
-	code, raw, err := c.doJSON(http.MethodPost, "http://"+addr+"/produce", req)
-	if err != nil {
+	for attempt := 0; attempt < 5; attempt++ {
+		code, raw, err := c.doJSON(http.MethodPost, "http://"+addr+"/produce", req)
+		if err != nil {
+			return out, err
+		}
+		if code == http.StatusConflict {
+			var eb protocol.ErrorBody
+			_ = json.Unmarshal(raw, &eb)
+			if eb.LeaderAddr != "" && eb.LeaderAddr != addr {
+				addr = eb.LeaderAddr
+				continue
+			}
+			return out, fmt.Errorf("%s", eb.Error)
+		}
+		if code >= 400 {
+			var eb protocol.ErrorBody
+			_ = json.Unmarshal(raw, &eb)
+			if eb.Error == "" {
+				eb.Error = string(raw)
+			}
+			return out, fmt.Errorf("%s", eb.Error)
+		}
+		err = json.Unmarshal(raw, &out)
 		return out, err
 	}
-	if code >= 400 {
-		var eb protocol.ErrorBody
-		_ = json.Unmarshal(raw, &eb)
-		return out, fmt.Errorf("%s", eb.Error)
-	}
-	err = json.Unmarshal(raw, &out)
-	return out, err
+	return out, fmt.Errorf("produce: retries exhausted")
 }
 
 func (c *Client) Fetch(addr, topic string, partition int, offset int64, maxBytes int, replica bool) (protocol.FetchResponse, error) {

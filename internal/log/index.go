@@ -77,7 +77,8 @@ func (i *sparseIndex) lookup(relOffset uint32) uint32 {
 		return i.entries[j].RelOffset > relOffset
 	})
 	if n == 0 {
-		return i.entries[0].Position
+		// No entry at or before the target — scan from the start of the segment.
+		return 0
 	}
 	return i.entries[n-1].Position
 }

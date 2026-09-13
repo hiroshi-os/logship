@@ -189,26 +189,23 @@ func (s *segment) readFrom(fromOffset int64, maxBytes int, maxOffset int64) ([]r
 	}
 	rel := uint32(fromOffset - s.baseOffset)
 	pos := int64(s.idx.lookup(rel))
-	if _, err := s.logFile.Seek(pos, io.SeekStart); err != nil {
-		return nil, err
-	}
 	var out []record.Record
 	var n int
-	for {
-		rec, err := record.Decode(s.logFile)
+	for pos < s.size {
+		rec, sz, err := record.DecodeAt(s.logFile, pos)
 		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
 			return nil, err
 		}
+		pos += int64(sz)
 		if rec.Offset < fromOffset {
 			continue
 		}
 		if rec.Offset >= maxOffset {
 			break
 		}
-		sz := record.EncodedSize(rec)
 		if n > 0 && n+sz > maxBytes {
 			break
 		}
