@@ -73,9 +73,47 @@ func (b *Broker) applyTopics(topics []topicMeta) {
 	for i := range topics {
 		t := topics[i]
 		cp := t
+		prev := b.topics[t.Name]
+		for j := range cp.Partitions {
+			in := &cp.Partitions[j]
+			var local *partitionMeta
+			if prev != nil {
+				for k := range prev.Partitions {
+					if prev.Partitions[k].ID == in.ID {
+						local = &prev.Partitions[k]
+						break
+					}
+				}
+			}
+			// Still the leader: our ISR wins over a follower snapshot that may
+			// still list a replica we have already dropped.
+			if local != nil && local.Leader == b.cfg.ID && in.Leader == b.cfg.ID {
+				in.ISR = append([]int(nil), local.ISR...)
+			} else {
+				if b.cluster.IsController() && local != nil && !b.cluster.IsAlive(in.Leader) {
+					in.Leader = local.Leader
+				}
+				in.ISR = filterAlive(in.ISR, func(id int) bool {
+					return id == b.cfg.ID || b.cluster.IsAlive(id)
+				})
+				if len(in.ISR) == 0 {
+					in.ISR = []int{in.Leader}
+				}
+			}
+		}
 		b.topics[t.Name] = &cp
 	}
 	_ = b.persistTopicsLocked()
+}
+
+func filterAlive(ids []int, alive func(int) bool) []int {
+	out := make([]int, 0, len(ids))
+	for _, id := range ids {
+		if alive(id) {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 func (b *Broker) snapshotTopics() []topicMeta {

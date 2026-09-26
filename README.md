@@ -1,5 +1,7 @@
 # logship
 
+[![CI](https://github.com/hiroshi-os/logship/actions/workflows/ci.yml/badge.svg)](https://github.com/hiroshi-os/logship/actions/workflows/ci.yml)
+
 A small Kafka-shaped commit log in Go: segmented logs with a sparse index and
 per-record CRC, keyed / round-robin partitioning, HTTP produce & fetch,
 consumer groups (join / sync / heartbeat, range assignor, durable offsets),
@@ -77,13 +79,36 @@ No Docker? `./scripts/local-cluster.sh` starts three brokers on
 `acks=1` (default) returns after the leader append. `acks=all` waits until the
 high watermark covers the offset.
 
-## Replication (honest version)
+## What is not guaranteed
 
 Membership is **static** (`--peers`). The controller is the lowest live broker
 id. Followers pull from the leader; the leader tracks an ISR and a high
-watermark. This is **not** Raft / KRaft / ZooKeeper. Dual-leader writes are
-possible on a network partition. Read [DESIGN.md](DESIGN.md) before using this
-for anything that cannot lose the tail of a log.
+watermark. That is the whole replication design. It is not a consensus log.
+Read [DESIGN.md](DESIGN.md) before storing anything you cannot lose or
+double-process.
+
+- **Not a Kafka replacement.** The API is HTTP + JSON. There is no Kafka wire
+  protocol, transactions, idempotent producer, compacted topics, or ACL.
+- **No split-brain protection.** A network partition can elect two controllers
+  and accept dual-leader writes to the same partition. Logs can diverge.
+  This is not Raft, KRaft, or ZooKeeper.
+- **No crash durability by default.** `fsync-every` defaults to 0, so appends
+  stay in the OS page cache until a segment rotates or the process closes.
+  `acks=1` returns after the leader append. It does not wait for followers
+  or disk. A crash can drop the tail.
+- **`acks=all` is not a disk flush and not a quorum election.** It waits until
+  the high watermark covers the offset. The high watermark is the minimum log
+  end of brokers currently in the ISR.
+- **Unclean leader election.** If no ISR member is alive, the first live
+  replica still becomes leader. That can drop the tail of the log.
+- **At-least-once consume, not exactly-once.** Group membership lives in
+  memory on the controller. Offsets are written locally and, when possible,
+  appended to `__consumer_offsets`. A controller failover does not promise the
+  new coordinator has those offsets, so consumers can reprocess.
+- **The ISR is heartbeat and replica-ack state, not a commit quorum.** A dead
+  broker is removed from the ISR. That does not fence a partitioned leader.
+- **No cross-partition ordering, retention, auth, or quotas.** Segments stay
+  on disk until the data directory is deleted.
 
 ## Chaos
 
@@ -92,8 +117,10 @@ for anything that cannot lose the tail of a log.
 ./scripts/chaos-kill-broker.sh broker-2
 ```
 
-The script SIGKILLs `broker-2`, produces a canary to a surviving broker, and
-starts the dead node again. Watch `/metadata` for ISR shrink and a new leader.
+The script SIGKILLs `broker-2`, waits until that broker is not alive and is
+out of the `orders` ISR, then produces to the partition it used to lead.
+Under Docker it starts the dead node again. A host cluster
+(`scripts/local-cluster.sh`) is left for you to restart.
 
 ## Benches
 
@@ -114,12 +141,16 @@ Full command lines and notes: [`benches/results.md`](benches/results.md). No inv
 ## Tests
 
 ```bash
-go test ./...
+go test -race ./...
 ```
+
+CI runs gofmt, `go vet`, `go test -race ./...`, and
+`scripts/chaos-kill-broker.sh` against a local three-broker cluster.
 
 Unit coverage: record CRC, segment rotation + sparse index + recovery, range
 assignor, keyed/keyless routing, group rebalance + durable offsets. An
-in-process 3-broker produce/fetch test lives in `internal/broker`.
+in-process 3-broker produce/fetch test, plus a broker-death ISR test, lives
+in `internal/broker`.
 
 ## Build
 

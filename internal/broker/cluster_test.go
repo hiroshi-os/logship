@@ -24,6 +24,11 @@ func freeAddr(t *testing.T) string {
 
 func startBroker(t *testing.T, id int, addr string, peers []cluster.Peer) *Broker {
 	t.Helper()
+	return startBrokerTune(t, id, addr, peers, nil)
+}
+
+func startBrokerTune(t *testing.T, id int, addr string, peers []cluster.Peer, tune func(*Config)) *Broker {
+	t.Helper()
 	cfg := Config{
 		ID:              id,
 		Bind:            addr,
@@ -39,6 +44,9 @@ func startBroker(t *testing.T, id int, addr string, peers []cluster.Peer) *Broke
 		IndexInterval:   256,
 		MinISR:          1,
 		ProduceTimeout:  3 * time.Second,
+	}
+	if tune != nil {
+		tune(&cfg)
 	}
 	b, err := New(cfg)
 	if err != nil {
@@ -155,4 +163,142 @@ func TestConsumerGroupRoundTrip(t *testing.T) {
 	if len(of.Offsets) == 0 || of.Offsets[0].Offset != 2 {
 		t.Fatalf("offsets %#v", of)
 	}
+}
+
+func clusterWithout(b *Broker, dead int) bool {
+	if b.cluster.IsAlive(dead) {
+		return false
+	}
+	for _, topic := range b.snapshotTopics() {
+		for _, p := range topic.Partitions {
+			if p.Leader == dead || isrContains(p.ISR, dead) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func isrContains(ids []int, id int) bool {
+	for _, x := range ids {
+		if x == id {
+			return true
+		}
+	}
+	return false
+}
+
+func TestDeadBrokerLeavesISRAndProduceStillWorks(t *testing.T) {
+	a1, a2, a3 := freeAddr(t), freeAddr(t), freeAddr(t)
+	peers := []cluster.Peer{
+		{ID: 1, Addr: a1}, {ID: 2, Addr: a2}, {ID: 3, Addr: a3},
+	}
+	// Lag window is far longer than session timeout. A dead replica whose
+	// last ack is still "fresh" must leave the ISR because it is not alive,
+	// not because replica.lag.time expired.
+	tune := func(cfg *Config) {
+		cfg.SessionTimeout = time.Second
+		cfg.ReplicaLagTime = 45 * time.Second
+	}
+	b1 := startBrokerTune(t, 1, a1, peers, tune)
+	victim := startBrokerTune(t, 2, a2, peers, tune)
+	_ = startBrokerTune(t, 3, a3, peers, tune)
+
+	cli := client.New([]string{a1, a3})
+	if err := cli.CreateTopic("orders", 3, 3); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(10 * time.Second)
+	var ledPart = -1
+	for time.Now().Before(deadline) {
+		md, err := cli.Metadata()
+		if err != nil {
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		ledPart = -1
+		full := 0
+		for _, topic := range md.Topics {
+			if topic.Name != "orders" {
+				continue
+			}
+			for _, p := range topic.Partitions {
+				if len(p.ISR) == 3 && isrContains(p.ISR, 2) {
+					full++
+				}
+				if p.Leader == 2 {
+					ledPart = p.ID
+				}
+			}
+		}
+		if full == 3 && ledPart >= 0 {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if ledPart < 0 {
+		t.Fatal("broker 2 never became leader of an orders partition with a full ISR")
+	}
+
+	if err := victim.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline = time.Now().Add(12 * time.Second)
+	for time.Now().Before(deadline) {
+		if clusterWithout(b1, 2) {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !clusterWithout(b1, 2) {
+		t.Fatalf("broker 2 still in ISR or leadership after session timeout: %#v", b1.snapshotTopics())
+	}
+	holdUntil := time.Now().Add(time.Second)
+	for time.Now().Before(holdUntil) {
+		if !clusterWithout(b1, 2) {
+			t.Fatalf("broker 2 returned to ISR or leadership: %#v", b1.snapshotTopics())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	md, err := cli.Metadata()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range md.Brokers {
+		if b.ID == 2 && b.Alive {
+			t.Fatalf("metadata still reports broker 2 alive: %#v", md)
+		}
+	}
+	for _, topic := range md.Topics {
+		if topic.Name != "orders" {
+			continue
+		}
+		for _, p := range topic.Partitions {
+			if p.Leader == 2 || isrContains(p.ISR, 2) {
+				t.Fatalf("metadata still has broker 2: %#v", md)
+			}
+		}
+	}
+
+	deadline = time.Now().Add(5 * time.Second)
+	var prodErr error
+	for time.Now().Before(deadline) {
+		resp, err := cli.Produce(a1, protocol.ProduceRequest{
+			Topic:     "orders",
+			Partition: ledPart,
+			Value:     "after-kill",
+			Acks:      "1",
+		})
+		prodErr = err
+		if err == nil && len(resp.Results) == 1 && resp.Results[0].Partition == ledPart {
+			return
+		}
+		if err == nil {
+			prodErr = fmt.Errorf("unexpected produce response %#v", resp)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("produce to failed-over partition %d: %v", ledPart, prodErr)
 }
