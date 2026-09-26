@@ -54,6 +54,12 @@ func (b *Broker) recomputeHW(topic string, partition int) {
 		if id == b.cfg.ID {
 			continue
 		}
+		// Session timeout means the broker is dead. A replica ack still inside
+		// replica.lag.time must not put it back into the ISR, or the high
+		// watermark stays pinned to a replica that will not catch up.
+		if !b.cluster.IsAlive(id) {
+			continue
+		}
 		st, ok := states[id]
 		if !ok {
 			continue

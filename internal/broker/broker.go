@@ -42,8 +42,9 @@ type Broker struct {
 	httpServer *http.Server
 	ln         net.Listener
 
-	stop chan struct{}
-	wg   sync.WaitGroup
+	stop      chan struct{}
+	closeOnce sync.Once
+	wg        sync.WaitGroup
 
 	followMu     sync.Mutex
 	followCancel map[string]context.CancelFunc
@@ -172,19 +173,21 @@ func (b *Broker) Start() error {
 }
 
 func (b *Broker) Close() error {
-	close(b.stop)
-	b.followMu.Lock()
-	for _, cancel := range b.followCancel {
-		cancel()
-	}
-	b.followMu.Unlock()
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	if b.httpServer != nil {
-		_ = b.httpServer.Shutdown(ctx)
-	}
-	b.wg.Wait()
-	_ = b.store.Close()
+	b.closeOnce.Do(func() {
+		close(b.stop)
+		b.followMu.Lock()
+		for _, cancel := range b.followCancel {
+			cancel()
+		}
+		b.followMu.Unlock()
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if b.httpServer != nil {
+			_ = b.httpServer.Shutdown(ctx)
+		}
+		b.wg.Wait()
+		_ = b.store.Close()
+	})
 	return nil
 }
 
@@ -239,6 +242,17 @@ func (b *Broker) controllerTick() {
 					p.ISR = append([]int{p.Leader}, p.ISR...)
 				}
 				changed = true
+			}
+			// Prefer the first replica once it is alive and in the ISR again.
+			// Without this, a brief startup blip leaves every partition on the
+			// surviving broker forever and chaos against broker-2 never sees a
+			// leadership failover.
+			if len(p.Replicas) > 0 {
+				pref := p.Replicas[0]
+				if pref != p.Leader && b.cluster.IsAlive(pref) && contains(p.ISR, pref) {
+					p.Leader = pref
+					changed = true
+				}
 			}
 			if len(p.ISR) == 0 {
 				p.ISR = []int{p.Leader}
